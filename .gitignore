@@ -1,0 +1,11 @@
+build/
+out/
+.vs/
+.idea/
+*.user
+*.suo
+*.pdb
+*.ilk
+*.exp
+*.lib
+OctoFog.log
