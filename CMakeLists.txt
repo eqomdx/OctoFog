@@ -5,9 +5,14 @@ if(NOT WIN32)
   message(FATAL_ERROR "OctoFog currently builds on Windows only.")
 endif()
 
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+  message(FATAL_ERROR "OctoFog 0.1 currently targets the 32-bit WoW client. Configure with -A Win32.")
+endif()
+
 add_library(OctoFog SHARED
   src/proxy.cpp
   src/config.cpp
+  src/d3d9.def
 )
 
 target_compile_features(OctoFog PRIVATE cxx_std_20)
