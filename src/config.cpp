@@ -8,9 +8,23 @@
 #include <mutex>
 
 namespace {
-std::once_flag g_once;
+std::once_flag g_directoryOnce;
+std::once_flag g_configOnce;
+std::mutex g_configMutex;
+
 FogConfig g_config;
 std::wstring g_gameDirectory;
+
+void InitializeDirectory() {
+    wchar_t exePath[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    g_gameDirectory = std::filesystem::path(exePath).parent_path().wstring();
+}
+
+std::wstring IniPath() {
+    std::call_once(g_directoryOnce, InitializeDirectory);
+    return (std::filesystem::path(g_gameDirectory) / L"OctoFog.ini").wstring();
+}
 
 float ReadFloat(const wchar_t* ini, const wchar_t* key, float fallback) {
     wchar_t fallbackText[64]{};
@@ -22,69 +36,84 @@ float ReadFloat(const wchar_t* ini, const wchar_t* key, float fallback) {
     return (end == value) ? fallback : parsed;
 }
 
-void Initialize() {
-    wchar_t exePath[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    g_gameDirectory = std::filesystem::path(exePath).parent_path().wstring();
+FogConfig LoadConfigFromDisk() {
+    FogConfig cfg;
+    const std::wstring ini = IniPath();
 
-    const std::wstring ini =
-        (std::filesystem::path(g_gameDirectory) / L"OctoFog.ini").wstring();
-
-    g_config.enabled =
+    cfg.enabled =
         GetPrivateProfileIntW(L"OctoFog", L"Enabled", 1, ini.c_str()) != 0;
-    g_config.logging =
+    cfg.logging =
         GetPrivateProfileIntW(L"OctoFog", L"Logging", 1, ini.c_str()) != 0;
-    g_config.diagnostics =
+    cfg.diagnostics =
         GetPrivateProfileIntW(L"OctoFog", L"Diagnostics", 1, ini.c_str()) != 0;
 
-    g_config.densityMultiplier = std::max(
+    cfg.densityMultiplier = std::max(
         0.0f,
         ReadFloat(ini.c_str(), L"DensityMultiplier",
-                  g_config.densityMultiplier));
-    g_config.startMultiplier = std::max(
+                  cfg.densityMultiplier));
+    cfg.startMultiplier = std::max(
         0.0f,
         ReadFloat(ini.c_str(), L"StartMultiplier",
-                  g_config.startMultiplier));
-    g_config.endMultiplier = std::max(
+                  cfg.startMultiplier));
+    cfg.endMultiplier = std::max(
         0.0f,
         ReadFloat(ini.c_str(), L"EndMultiplier",
-                  g_config.endMultiplier));
-    g_config.minimumStart = std::max(
+                  cfg.endMultiplier));
+    cfg.minimumStart = std::max(
         0.0f,
         ReadFloat(ini.c_str(), L"MinimumStart",
-                  g_config.minimumStart));
-    g_config.minimumEnd = std::max(
-        g_config.minimumStart,
+                  cfg.minimumStart));
+    cfg.minimumEnd = std::max(
+        cfg.minimumStart,
         ReadFloat(ini.c_str(), L"MinimumEnd",
-                  g_config.minimumEnd));
+                  cfg.minimumEnd));
 
-    g_config.tintStrength = std::clamp(
-        ReadFloat(ini.c_str(), L"TintStrength", g_config.tintStrength),
+    cfg.tintStrength = std::clamp(
+        ReadFloat(ini.c_str(), L"TintStrength", cfg.tintStrength),
         0.0f, 1.0f);
-    g_config.tintR = std::clamp(
-        ReadFloat(ini.c_str(), L"TintR", g_config.tintR),
+    cfg.tintR = std::clamp(
+        ReadFloat(ini.c_str(), L"TintR", cfg.tintR),
         0.0f, 1.0f);
-    g_config.tintG = std::clamp(
-        ReadFloat(ini.c_str(), L"TintG", g_config.tintG),
+    cfg.tintG = std::clamp(
+        ReadFloat(ini.c_str(), L"TintG", cfg.tintG),
         0.0f, 1.0f);
-    g_config.tintB = std::clamp(
-        ReadFloat(ini.c_str(), L"TintB", g_config.tintB),
+    cfg.tintB = std::clamp(
+        ReadFloat(ini.c_str(), L"TintB", cfg.tintB),
         0.0f, 1.0f);
+
+    return cfg;
+}
+
+void InitializeConfig() {
+    const FogConfig cfg = LoadConfigFromDisk();
+    std::lock_guard<std::mutex> lock(g_configMutex);
+    g_config = cfg;
 }
 }
 
-const FogConfig& GetFogConfig() {
-    std::call_once(g_once, Initialize);
+FogConfig GetFogConfig() {
+    std::call_once(g_configOnce, InitializeConfig);
+    std::lock_guard<std::mutex> lock(g_configMutex);
     return g_config;
 }
 
+FogConfig ReloadFogConfig() {
+    std::call_once(g_configOnce, InitializeConfig);
+    const FogConfig cfg = LoadConfigFromDisk();
+    {
+        std::lock_guard<std::mutex> lock(g_configMutex);
+        g_config = cfg;
+    }
+    return cfg;
+}
+
 const std::wstring& GetGameDirectory() {
-    std::call_once(g_once, Initialize);
+    std::call_once(g_directoryOnce, InitializeDirectory);
     return g_gameDirectory;
 }
 
 void Log(const char* format, ...) {
-    const auto& cfg = GetFogConfig();
+    const auto cfg = GetFogConfig();
     if (!cfg.logging) return;
 
     const auto path =
