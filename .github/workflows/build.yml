@@ -26,6 +26,9 @@ jobs:
           Copy-Item build/Release/d3d9.dll dist/d3d9.dll
           Copy-Item OctoFog.ini dist/OctoFog.ini
           Copy-Item README.md dist/README.md
+          Copy-Item TESTING.md dist/TESTING.md
+          $hash = (Get-FileHash dist/d3d9.dll -Algorithm SHA256).Hash.ToLower()
+          "d3d9.dll  sha256:$hash" | Set-Content dist/CHECKSUMS.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
