@@ -29,7 +29,7 @@ The beginning of the log should contain lines similar to:
 ```text
 OctoFog 0.1.1 loaded. Enabled=1 Diagnostics=1
 IDirect3DDevice9 hooked: Present + SetRenderState.
-Manual test hotkey: F8 toggles OctoFog effect on/off.
+Manual test hotkeys: F8 toggles effect; F9 reloads OctoFog.ini.
 ```
 
 As the world renders, diagnostics should also report the first fog states seen, for example:
@@ -58,9 +58,13 @@ The current cached fog values are reapplied immediately, so the comparison shoul
 
 Take screenshots from the same camera position if the difference is subtle.
 
+### Live tuning
+
+You can edit `OctoFog.ini` while the client is running, save it, then press **F9**. OctoFog reloads the file and reapplies the cached fog values immediately. This is the quickest way to tune `StartMultiplier`, `EndMultiplier`, `DensityMultiplier` and `TintStrength` from one fixed camera position.
+
 ## Strong-effect test
 
-If the default values are too subtle, close the client and temporarily try:
+If the default values are too subtle, temporarily try:
 
 ```ini
 StartMultiplier=0.45
@@ -69,7 +73,7 @@ DensityMultiplier=2.00
 TintStrength=0.15
 ```
 
-These values are intentionally strong for proving that the hook works; they are not proposed final defaults.
+Save the file and press **F9** to apply them. These values are intentionally strong for proving that the hook works; they are not proposed final defaults.
 
 ## What to report
 
