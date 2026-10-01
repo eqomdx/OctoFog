@@ -38,6 +38,17 @@ struct SeenFogStates {
     std::atomic_bool rangeFogEnable{false};
 } g_seen;
 
+struct FogStateCache {
+    bool hasColor = false;
+    bool hasStart = false;
+    bool hasEnd = false;
+    bool hasDensity = false;
+    DWORD color = 0;
+    DWORD start = 0;
+    DWORD end = 0;
+    DWORD density = 0;
+} g_fogCache;
+
 bool MarkFirst(std::atomic_bool& flag) {
     bool expected = false;
     return flag.compare_exchange_strong(expected, true);
@@ -73,6 +84,79 @@ DWORD TransformFogColor(DWORD value, const FogConfig& cfg) {
         BlendByte(r, cfg.tintR, cfg.tintStrength),
         BlendByte(g, cfg.tintG, cfg.tintStrength),
         BlendByte(b, cfg.tintB, cfg.tintStrength));
+}
+
+DWORD TransformFogState(
+    D3DRENDERSTATETYPE state,
+    DWORD value,
+    const FogConfig& cfg,
+    bool active) {
+
+    if (!active) return value;
+
+    switch (state) {
+    case D3DRS_FOGSTART:
+        return FloatToDword(std::max(
+            cfg.minimumStart,
+            DwordToFloat(value) * cfg.startMultiplier));
+    case D3DRS_FOGEND:
+        return FloatToDword(std::max(
+            cfg.minimumEnd,
+            DwordToFloat(value) * cfg.endMultiplier));
+    case D3DRS_FOGDENSITY:
+        return FloatToDword(std::max(
+            0.0f,
+            DwordToFloat(value) * cfg.densityMultiplier));
+    case D3DRS_FOGCOLOR:
+        return TransformFogColor(value, cfg);
+    default:
+        return value;
+    }
+}
+
+void CacheOriginalFogState(D3DRENDERSTATETYPE state, DWORD value) {
+    switch (state) {
+    case D3DRS_FOGCOLOR:
+        g_fogCache.hasColor = true;
+        g_fogCache.color = value;
+        break;
+    case D3DRS_FOGSTART:
+        g_fogCache.hasStart = true;
+        g_fogCache.start = value;
+        break;
+    case D3DRS_FOGEND:
+        g_fogCache.hasEnd = true;
+        g_fogCache.end = value;
+        break;
+    case D3DRS_FOGDENSITY:
+        g_fogCache.hasDensity = true;
+        g_fogCache.density = value;
+        break;
+    default:
+        break;
+    }
+}
+
+void ApplyCachedFogStates(IDirect3DDevice9* device, bool active) {
+    if (!g_originalSetRenderState) return;
+    const auto& cfg = GetFogConfig();
+
+    if (g_fogCache.hasColor)
+        g_originalSetRenderState(
+            device, D3DRS_FOGCOLOR,
+            TransformFogState(D3DRS_FOGCOLOR, g_fogCache.color, cfg, active));
+    if (g_fogCache.hasStart)
+        g_originalSetRenderState(
+            device, D3DRS_FOGSTART,
+            TransformFogState(D3DRS_FOGSTART, g_fogCache.start, cfg, active));
+    if (g_fogCache.hasEnd)
+        g_originalSetRenderState(
+            device, D3DRS_FOGEND,
+            TransformFogState(D3DRS_FOGEND, g_fogCache.end, cfg, active));
+    if (g_fogCache.hasDensity)
+        g_originalSetRenderState(
+            device, D3DRS_FOGDENSITY,
+            TransformFogState(D3DRS_FOGDENSITY, g_fogCache.density, cfg, active));
 }
 
 void LogFogStateOnce(D3DRENDERSTATETYPE state, DWORD original, DWORD transformed) {
@@ -132,6 +216,7 @@ HRESULT STDMETHODCALLTYPE HookedPresent(
     if ((GetAsyncKeyState(VK_F8) & 1) != 0) {
         const bool enabled = !g_runtimeEnabled.load();
         g_runtimeEnabled.store(enabled);
+        ApplyCachedFogStates(device, enabled);
         Log("F8: OctoFog runtime effect %s.", enabled ? "ENABLED" : "BYPASSED");
     }
 
@@ -152,37 +237,8 @@ HRESULT STDMETHODCALLTYPE HookedSetRenderState(
     const auto& cfg = GetFogConfig();
     const bool active = cfg.enabled && g_runtimeEnabled.load();
 
-    DWORD transformed = value;
-
-    if (active) {
-        switch (state) {
-        case D3DRS_FOGSTART: {
-            const float original = DwordToFloat(value);
-            const float adjusted = std::max(
-                cfg.minimumStart, original * cfg.startMultiplier);
-            transformed = FloatToDword(adjusted);
-            break;
-        }
-        case D3DRS_FOGEND: {
-            const float original = DwordToFloat(value);
-            const float adjusted = std::max(
-                cfg.minimumEnd, original * cfg.endMultiplier);
-            transformed = FloatToDword(adjusted);
-            break;
-        }
-        case D3DRS_FOGDENSITY: {
-            const float original = DwordToFloat(value);
-            transformed = FloatToDword(
-                std::max(0.0f, original * cfg.densityMultiplier));
-            break;
-        }
-        case D3DRS_FOGCOLOR:
-            transformed = TransformFogColor(value, cfg);
-            break;
-        default:
-            break;
-        }
-    }
+    CacheOriginalFogState(state, value);
+    const DWORD transformed = TransformFogState(state, value, cfg, active);
 
     LogFogStateOnce(state, value, transformed);
     return g_originalSetRenderState(device, state, transformed);
