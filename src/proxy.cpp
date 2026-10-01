@@ -2,7 +2,7 @@
 #include <d3d9.h>
 
 #include <algorithm>
-#include <array>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 
@@ -13,11 +13,35 @@ HMODULE g_realD3D9 = nullptr;
 using Direct3DCreate9Fn = IDirect3D9* (WINAPI*)(UINT);
 Direct3DCreate9Fn g_realDirect3DCreate9 = nullptr;
 
-using SetRenderStateFn = HRESULT (STDMETHODCALLTYPE*)(IDirect3DDevice9*, D3DRENDERSTATETYPE, DWORD);
+using SetRenderStateFn = HRESULT (STDMETHODCALLTYPE*)(
+    IDirect3DDevice9*, D3DRENDERSTATETYPE, DWORD);
+using PresentFn = HRESULT (STDMETHODCALLTYPE*)(
+    IDirect3DDevice9*, const RECT*, const RECT*, HWND, const RGNDATA*);
+
 SetRenderStateFn g_originalSetRenderState = nullptr;
+PresentFn g_originalPresent = nullptr;
+
+std::atomic_bool g_runtimeEnabled{true};
 
 constexpr std::size_t kDeviceVtableEntries = 119;
+constexpr std::size_t kPresentIndex = 17;
 constexpr std::size_t kSetRenderStateIndex = 57;
+
+struct SeenFogStates {
+    std::atomic_bool fogEnable{false};
+    std::atomic_bool fogColor{false};
+    std::atomic_bool fogStart{false};
+    std::atomic_bool fogEnd{false};
+    std::atomic_bool fogDensity{false};
+    std::atomic_bool fogTableMode{false};
+    std::atomic_bool fogVertexMode{false};
+    std::atomic_bool rangeFogEnable{false};
+} g_seen;
+
+bool MarkFirst(std::atomic_bool& flag) {
+    bool expected = false;
+    return flag.compare_exchange_strong(expected, true);
+}
 
 float DwordToFloat(DWORD value) {
     float result = 0.0f;
@@ -51,45 +75,116 @@ DWORD TransformFogColor(DWORD value, const FogConfig& cfg) {
         BlendByte(b, cfg.tintB, cfg.tintStrength));
 }
 
+void LogFogStateOnce(D3DRENDERSTATETYPE state, DWORD original, DWORD transformed) {
+    const auto& cfg = GetFogConfig();
+    if (!cfg.diagnostics) return;
+
+    switch (state) {
+    case D3DRS_FOGENABLE:
+        if (MarkFirst(g_seen.fogEnable))
+            Log("Observed D3DRS_FOGENABLE=%lu", static_cast<unsigned long>(original));
+        break;
+    case D3DRS_FOGCOLOR:
+        if (MarkFirst(g_seen.fogColor))
+            Log("Observed D3DRS_FOGCOLOR=0x%08lX -> 0x%08lX",
+                static_cast<unsigned long>(original),
+                static_cast<unsigned long>(transformed));
+        break;
+    case D3DRS_FOGSTART:
+        if (MarkFirst(g_seen.fogStart))
+            Log("Observed D3DRS_FOGSTART=%.3f -> %.3f",
+                DwordToFloat(original), DwordToFloat(transformed));
+        break;
+    case D3DRS_FOGEND:
+        if (MarkFirst(g_seen.fogEnd))
+            Log("Observed D3DRS_FOGEND=%.3f -> %.3f",
+                DwordToFloat(original), DwordToFloat(transformed));
+        break;
+    case D3DRS_FOGDENSITY:
+        if (MarkFirst(g_seen.fogDensity))
+            Log("Observed D3DRS_FOGDENSITY=%.6f -> %.6f",
+                DwordToFloat(original), DwordToFloat(transformed));
+        break;
+    case D3DRS_FOGTABLEMODE:
+        if (MarkFirst(g_seen.fogTableMode))
+            Log("Observed D3DRS_FOGTABLEMODE=%lu", static_cast<unsigned long>(original));
+        break;
+    case D3DRS_FOGVERTEXMODE:
+        if (MarkFirst(g_seen.fogVertexMode))
+            Log("Observed D3DRS_FOGVERTEXMODE=%lu", static_cast<unsigned long>(original));
+        break;
+    case D3DRS_RANGEFOGENABLE:
+        if (MarkFirst(g_seen.rangeFogEnable))
+            Log("Observed D3DRS_RANGEFOGENABLE=%lu", static_cast<unsigned long>(original));
+        break;
+    default:
+        break;
+    }
+}
+
+HRESULT STDMETHODCALLTYPE HookedPresent(
+    IDirect3DDevice9* device,
+    const RECT* sourceRect,
+    const RECT* destRect,
+    HWND destWindowOverride,
+    const RGNDATA* dirtyRegion) {
+
+    if ((GetAsyncKeyState(VK_F8) & 1) != 0) {
+        const bool enabled = !g_runtimeEnabled.load();
+        g_runtimeEnabled.store(enabled);
+        Log("F8: OctoFog runtime effect %s.", enabled ? "ENABLED" : "BYPASSED");
+    }
+
+    return g_originalPresent
+        ? g_originalPresent(device, sourceRect, destRect, destWindowOverride, dirtyRegion)
+        : D3DERR_INVALIDCALL;
+}
+
 HRESULT STDMETHODCALLTYPE HookedSetRenderState(
     IDirect3DDevice9* device,
     D3DRENDERSTATETYPE state,
     DWORD value) {
 
-    const auto& cfg = GetFogConfig();
-    if (!cfg.enabled || !g_originalSetRenderState) {
-        return g_originalSetRenderState
-            ? g_originalSetRenderState(device, state, value)
-            : D3DERR_INVALIDCALL;
+    if (!g_originalSetRenderState) {
+        return D3DERR_INVALIDCALL;
     }
+
+    const auto& cfg = GetFogConfig();
+    const bool active = cfg.enabled && g_runtimeEnabled.load();
 
     DWORD transformed = value;
 
-    switch (state) {
-    case D3DRS_FOGSTART: {
-        const float original = DwordToFloat(value);
-        const float adjusted = std::max(cfg.minimumStart, original * cfg.startMultiplier);
-        transformed = FloatToDword(adjusted);
-        break;
-    }
-    case D3DRS_FOGEND: {
-        const float original = DwordToFloat(value);
-        const float adjusted = std::max(cfg.minimumEnd, original * cfg.endMultiplier);
-        transformed = FloatToDword(adjusted);
-        break;
-    }
-    case D3DRS_FOGDENSITY: {
-        const float original = DwordToFloat(value);
-        transformed = FloatToDword(std::max(0.0f, original * cfg.densityMultiplier));
-        break;
-    }
-    case D3DRS_FOGCOLOR:
-        transformed = TransformFogColor(value, cfg);
-        break;
-    default:
-        break;
+    if (active) {
+        switch (state) {
+        case D3DRS_FOGSTART: {
+            const float original = DwordToFloat(value);
+            const float adjusted = std::max(
+                cfg.minimumStart, original * cfg.startMultiplier);
+            transformed = FloatToDword(adjusted);
+            break;
+        }
+        case D3DRS_FOGEND: {
+            const float original = DwordToFloat(value);
+            const float adjusted = std::max(
+                cfg.minimumEnd, original * cfg.endMultiplier);
+            transformed = FloatToDword(adjusted);
+            break;
+        }
+        case D3DRS_FOGDENSITY: {
+            const float original = DwordToFloat(value);
+            transformed = FloatToDword(
+                std::max(0.0f, original * cfg.densityMultiplier));
+            break;
+        }
+        case D3DRS_FOGCOLOR:
+            transformed = TransformFogColor(value, cfg);
+            break;
+        default:
+            break;
+        }
     }
 
+    LogFogStateOnce(state, value, transformed);
     return g_originalSetRenderState(device, state, transformed);
 }
 
@@ -100,7 +195,8 @@ bool HookDevice(IDirect3DDevice9* device) {
     if (!objectVtable || !*objectVtable) return false;
 
     void** originalVtable = *objectVtable;
-    if (originalVtable[kSetRenderStateIndex] == reinterpret_cast<void*>(&HookedSetRenderState)) {
+    if (originalVtable[kSetRenderStateIndex] ==
+        reinterpret_cast<void*>(&HookedSetRenderState)) {
         return true;
     }
 
@@ -118,13 +214,20 @@ bool HookDevice(IDirect3DDevice9* device) {
 
     if (!g_originalSetRenderState) {
         g_originalSetRenderState =
-            reinterpret_cast<SetRenderStateFn>(originalVtable[kSetRenderStateIndex]);
+            reinterpret_cast<SetRenderStateFn>(
+                originalVtable[kSetRenderStateIndex]);
+    }
+    if (!g_originalPresent) {
+        g_originalPresent =
+            reinterpret_cast<PresentFn>(originalVtable[kPresentIndex]);
     }
 
+    shadow[kPresentIndex] = reinterpret_cast<void*>(&HookedPresent);
     shadow[kSetRenderStateIndex] = reinterpret_cast<void*>(&HookedSetRenderState);
     *objectVtable = shadow;
 
-    Log("IDirect3DDevice9 hooked. Native fog render states will be transformed.");
+    Log("IDirect3DDevice9 hooked: Present + SetRenderState.");
+    Log("Manual test hotkey: F8 toggles OctoFog effect on/off.");
     return true;
 }
 
@@ -133,16 +236,28 @@ bool LoadRealD3D9() {
 
     wchar_t systemDir[MAX_PATH]{};
     const UINT length = GetSystemDirectoryW(systemDir, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) return false;
+    if (length == 0 || length >= MAX_PATH) {
+        Log("GetSystemDirectoryW failed.");
+        return false;
+    }
 
     const auto path = std::filesystem::path(systemDir) / L"d3d9.dll";
     g_realD3D9 = LoadLibraryW(path.c_str());
-    if (!g_realD3D9) return false;
+    if (!g_realD3D9) {
+        Log("Failed to load system d3d9.dll (error %lu).",
+            static_cast<unsigned long>(GetLastError()));
+        return false;
+    }
 
     g_realDirect3DCreate9 = reinterpret_cast<Direct3DCreate9Fn>(
         GetProcAddress(g_realD3D9, "Direct3DCreate9"));
 
-    return g_realDirect3DCreate9 != nullptr;
+    if (!g_realDirect3DCreate9) {
+        Log("System d3d9.dll does not export Direct3DCreate9.");
+        return false;
+    }
+
+    return true;
 }
 
 class Direct3D9Proxy final : public IDirect3D9 {
@@ -259,7 +374,8 @@ public:
         if (SUCCEEDED(hr) && returnedDeviceInterface && *returnedDeviceInterface) {
             HookDevice(*returnedDeviceInterface);
         } else {
-            Log("CreateDevice failed: 0x%08lX", static_cast<unsigned long>(hr));
+            Log("CreateDevice failed: 0x%08lX",
+                static_cast<unsigned long>(hr));
         }
 
         return hr;
@@ -271,7 +387,7 @@ private:
 }
 
 extern "C" __declspec(dllexport)
-IDirect3D9* WINAPI Direct3DCreate9(UINT sdkVersion) {
+IDirect3D9* WINAPI OctoFogDirect3DCreate9(UINT sdkVersion) {
     if (!LoadRealD3D9()) {
         return nullptr;
     }
@@ -283,7 +399,11 @@ IDirect3D9* WINAPI Direct3DCreate9(UINT sdkVersion) {
     }
 
     const auto& cfg = GetFogConfig();
-    Log("OctoFog 0.1.0 loaded. Enabled=%d", cfg.enabled ? 1 : 0);
+    g_runtimeEnabled.store(cfg.enabled);
+
+    Log("OctoFog 0.1.1 loaded. Enabled=%d Diagnostics=%d",
+        cfg.enabled ? 1 : 0,
+        cfg.diagnostics ? 1 : 0);
 
     return new Direct3D9Proxy(real);
 }
@@ -291,11 +411,6 @@ IDirect3D9* WINAPI Direct3DCreate9(UINT sdkVersion) {
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(instance);
-    } else if (reason == DLL_PROCESS_DETACH) {
-        if (g_realD3D9) {
-            FreeLibrary(g_realD3D9);
-            g_realD3D9 = nullptr;
-        }
     }
     return TRUE;
 }
