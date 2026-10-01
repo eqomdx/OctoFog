@@ -21,6 +21,7 @@ This first prototype deliberately does **not** claim to provide true volumetric 
 - Optional colour tint blended with WoW's zone/weather fog colour
 - INI configuration
 - **F8 live A/B toggle** for manual testing
+- **F9 INI hot reload** for live tuning
 - First-seen fog-state diagnostics in `OctoFog.log`
 - Local logging to `OctoFog.log`
 - No server changes
@@ -33,7 +34,8 @@ This first prototype deliberately does **not** claim to provide true volumetric 
 3. Copy `OctoFog.ini` into the same directory.
 4. Start the game normally.
 5. Press **F8** in-game to switch between OctoFog and the original fog values.
-6. Check `OctoFog.log` for hook/fog-state diagnostics.
+6. Edit `OctoFog.ini` and press **F9** to reload/tune it without restarting.
+7. Check `OctoFog.log` for hook/fog-state diagnostics.
 
 For the current manual test procedure, see [`TESTING.md`](TESTING.md).
 
