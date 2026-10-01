@@ -455,9 +455,9 @@ IDirect3D9* WINAPI OctoFogDirect3DCreate9(UINT sdkVersion) {
     }
 
     const auto& cfg = GetFogConfig();
-    g_runtimeEnabled.store(cfg.enabled);
+    g_runtimeEnabled.store(true);
 
-    Log("OctoFog 0.1.1 loaded. Enabled=%d Diagnostics=%d",
+    Log("OctoFog %s loaded. Enabled=%d Diagnostics=%d", OCTOFOG_VERSION,
         cfg.enabled ? 1 : 0,
         cfg.diagnostics ? 1 : 0);
 
