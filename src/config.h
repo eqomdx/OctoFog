@@ -18,6 +18,7 @@ struct FogConfig {
     float tintB = 0.82f;
 };
 
-const FogConfig& GetFogConfig();
+FogConfig GetFogConfig();
+FogConfig ReloadFogConfig();
 const std::wstring& GetGameDirectory();
 void Log(const char* format, ...);
