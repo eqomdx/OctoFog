@@ -139,7 +139,7 @@ void CacheOriginalFogState(D3DRENDERSTATETYPE state, DWORD value) {
 
 void ApplyCachedFogStates(IDirect3DDevice9* device, bool active) {
     if (!g_originalSetRenderState) return;
-    const auto& cfg = GetFogConfig();
+    const auto cfg = GetFogConfig();
 
     if (g_fogCache.hasColor)
         g_originalSetRenderState(
@@ -159,8 +159,24 @@ void ApplyCachedFogStates(IDirect3DDevice9* device, bool active) {
             TransformFogState(D3DRS_FOGDENSITY, g_fogCache.density, cfg, active));
 }
 
+bool IsFogStateOfInterest(D3DRENDERSTATETYPE state) {
+    switch (state) {
+    case D3DRS_FOGENABLE:
+    case D3DRS_FOGCOLOR:
+    case D3DRS_FOGSTART:
+    case D3DRS_FOGEND:
+    case D3DRS_FOGDENSITY:
+    case D3DRS_FOGTABLEMODE:
+    case D3DRS_FOGVERTEXMODE:
+    case D3DRS_RANGEFOGENABLE:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void LogFogStateOnce(D3DRENDERSTATETYPE state, DWORD original, DWORD transformed) {
-    const auto& cfg = GetFogConfig();
+    const auto cfg = GetFogConfig();
     if (!cfg.diagnostics) return;
 
     switch (state) {
@@ -216,8 +232,21 @@ HRESULT STDMETHODCALLTYPE HookedPresent(
     if ((GetAsyncKeyState(VK_F8) & 1) != 0) {
         const bool enabled = !g_runtimeEnabled.load();
         g_runtimeEnabled.store(enabled);
-        ApplyCachedFogStates(device, enabled);
+        const auto cfg = GetFogConfig();
+        ApplyCachedFogStates(device, cfg.enabled && enabled);
         Log("F8: OctoFog runtime effect %s.", enabled ? "ENABLED" : "BYPASSED");
+    }
+
+    if ((GetAsyncKeyState(VK_F9) & 1) != 0) {
+        const auto cfg = ReloadFogConfig();
+        const bool active = cfg.enabled && g_runtimeEnabled.load();
+        ApplyCachedFogStates(device, active);
+        Log("F9: reloaded OctoFog.ini: Enabled=%d Start=%.3f End=%.3f Density=%.3f Tint=%.3f",
+            cfg.enabled ? 1 : 0,
+            cfg.startMultiplier,
+            cfg.endMultiplier,
+            cfg.densityMultiplier,
+            cfg.tintStrength);
     }
 
     return g_originalPresent
@@ -234,7 +263,11 @@ HRESULT STDMETHODCALLTYPE HookedSetRenderState(
         return D3DERR_INVALIDCALL;
     }
 
-    const auto& cfg = GetFogConfig();
+    if (!IsFogStateOfInterest(state)) {
+        return g_originalSetRenderState(device, state, value);
+    }
+
+    const auto cfg = GetFogConfig();
     const bool active = cfg.enabled && g_runtimeEnabled.load();
 
     CacheOriginalFogState(state, value);
@@ -283,7 +316,7 @@ bool HookDevice(IDirect3DDevice9* device) {
     *objectVtable = shadow;
 
     Log("IDirect3DDevice9 hooked: Present + SetRenderState.");
-    Log("Manual test hotkey: F8 toggles OctoFog effect on/off.");
+    Log("Manual test hotkeys: F8 toggles effect; F9 reloads OctoFog.ini.");
     return true;
 }
 
@@ -454,7 +487,7 @@ IDirect3D9* WINAPI OctoFogDirect3DCreate9(UINT sdkVersion) {
         return nullptr;
     }
 
-    const auto& cfg = GetFogConfig();
+    const auto cfg = GetFogConfig();
     g_runtimeEnabled.store(true);
 
     Log("OctoFog %s loaded. Enabled=%d Diagnostics=%d", OCTOFOG_VERSION,
