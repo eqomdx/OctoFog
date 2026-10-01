@@ -6,6 +6,7 @@
 struct FogConfig {
     bool enabled = true;
     bool logging = true;
+    bool diagnostics = true;
     float densityMultiplier = 1.35f;
     float startMultiplier = 0.70f;
     float endMultiplier = 0.82f;
