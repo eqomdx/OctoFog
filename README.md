@@ -20,6 +20,8 @@ This first prototype deliberately does **not** claim to provide true volumetric 
 - Strengthens exponential fog density
 - Optional colour tint blended with WoW's zone/weather fog colour
 - INI configuration
+- **F8 live A/B toggle** for manual testing
+- First-seen fog-state diagnostics in `OctoFog.log`
 - Local logging to `OctoFog.log`
 - No server changes
 - No Lua addon required
@@ -30,7 +32,10 @@ This first prototype deliberately does **not** claim to provide true volumetric 
 2. Copy the resulting `d3d9.dll` into the same directory as `WoW.exe`.
 3. Copy `OctoFog.ini` into the same directory.
 4. Start the game normally.
-5. Check `OctoFog.log` if the client does not start or the effect is not visible.
+5. Press **F8** in-game to switch between OctoFog and the original fog values.
+6. Check `OctoFog.log` for hook/fog-state diagnostics.
+
+For the current manual test procedure, see [`TESTING.md`](TESTING.md).
 
 To uninstall, remove OctoFog's `d3d9.dll` and `OctoFog.ini`.
 
@@ -57,6 +62,7 @@ TintR=0.72
 TintG=0.78
 TintB=0.82
 Logging=1
+Diagnostics=1
 ```
 
 ### Useful values
@@ -112,7 +118,7 @@ OctoFog transforms fog values
 GPU
 ```
 
-The device hook uses a per-device shadow vtable. Only the `SetRenderState` entry is replaced; all other device methods continue to call Direct3D normally.
+The device hook uses a per-device shadow vtable. `SetRenderState` is intercepted for fog values and `Present` is intercepted for the F8 test hotkey; other device methods continue to call Direct3D normally.
 
 ## Roadmap
 
